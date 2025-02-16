@@ -2,9 +2,12 @@
 set -euo pipefail 
 
 target_version="${PSQL_VERSION:?ERROR: Target PostgreSQL version not set. Set the PSQL_VERSION environment variable.}"
-data_dir="/data/postgresql"
-binaries_dir="/usr/lib/postgresql"
-backup_dir="/data/backup"
+data_dir="${DATA_DIR:-/data/postgresql}"
+echo "You data dir is set to $data_dir"
+binaries_dir="${BINARIES_DIR:-/usr/lib/postgresql}"
+echo "You binaries_dir is set to $binaries_dir"
+backup_dir="${BACKUP_DIR:-/data/backup}"
+echo "You backup_dir is set to $backup_dir"
 
 # Get supported PostgreSQL versions from the environment variable
 supported_versions="$SUPPORTED_POSTGRES_VERSIONS"
