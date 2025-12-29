@@ -81,8 +81,8 @@ $binaries_dir/$current_version/bin/pg_ctl start -w -D "$data_dir"
 
 # Gather locale and encoding settings
 psql=$binaries_dir/$current_version/bin/psql
-lc_collate=$($psql -c "SHOW LC_COLLATE;" | awk 'NR==3' | xargs)
-lc_ctype=$($psql -c "SHOW LC_CTYPE;" | awk 'NR==3' | xargs)
+lc_collate=$($psql -c "SELECT datcollate FROM pg_database WHERE datname = current_database();" | awk 'NR==3' | xargs)
+lc_ctype=$($psql -c "SELECT datctype FROM pg_database WHERE datname = current_database();" | awk 'NR==3' | xargs)
 encoding=$($psql -c "SHOW server_encoding;" | awk 'NR==3' | xargs)
 echo "Locale and encoding settings: $lc_collate, $lc_ctype, $encoding."
 
