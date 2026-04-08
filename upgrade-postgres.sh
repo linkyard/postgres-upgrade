@@ -1,13 +1,23 @@
 #!/bin/bash
-set -euo pipefail 
+set -euo pipefail
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
 target_version="${PSQL_VERSION:?ERROR: Target PostgreSQL version not set. Set the PSQL_VERSION environment variable.}"
 data_dir="${DATA_DIR:-/data/postgresql}"
-echo "You data dir is set to $data_dir"
+log "Data dir is set to $data_dir"
 binaries_dir="${BINARIES_DIR:-/usr/lib/postgresql}"
-echo "You binaries_dir is set to $binaries_dir"
+log "Binaries dir is set to $binaries_dir"
 backup_dir="${BACKUP_DIR:-/data/backup}"
-echo "You backup_dir is set to $backup_dir"
+log "Backup dir is set to $backup_dir"
+
+# Post-upgrade behavior toggles (default: enabled)
+refresh_collation="${REFRESH_COLLATION:-true}"
+vacuum_analyze="${VACUUM_ANALYZE:-true}"
+# Additional SQL statements to run after a successful upgrade.
+# Separate multiple statements with semicolons, or pass a path to a .sql file via POST_UPGRADE_SQL_FILE.
+post_upgrade_sql="${POST_UPGRADE_SQL:-}"
+post_upgrade_sql_file="${POST_UPGRADE_SQL_FILE:-}"
 
 # Get supported PostgreSQL versions from the environment variable
 supported_versions="$SUPPORTED_POSTGRES_VERSIONS"
@@ -15,26 +25,29 @@ IFS=" " read -ra supported_versions_array <<< "$supported_versions"
 
 # Check if the backup is older than a week and delete if so
 if [ -d "$backup_dir/postgresql" ]; then
-  find "$backup_dir" -type d -mtime +7 -name 'postgresql' -exec echo "Deleting old backup: {}" \; -exec rm -rf {} +
-fi 
+  while IFS= read -r old_backup; do
+    log "Deleting old backup: $old_backup"
+    rm -rf "$old_backup"
+  done < <(find "$backup_dir" -type d -mtime +7 -name 'postgresql')
+fi
 
 # Verify that the target version is set
 if [ -z "$target_version" ]; then
-  echo "ERROR: Target PostgreSQL version is not set. Please set the PSQL_VERSION environment variable."
+  log "Target PostgreSQL version is not set. Please set the PSQL_VERSION environment variable."
   exit 1
 fi
 
 # Check if PG_VERSION file exists otherwise exit.
 if [ -f "$data_dir/PG_VERSION" ]; then
   current_version=$(cat "$data_dir/PG_VERSION" | cut -d '.' -f 1)
-  echo "current major postgres version is: $current_version."
+  log "Current major PostgreSQL version is: $current_version."
 else
-  echo "The 'PG_VERSION' file was not found in '$data_dir'. Skipping to database initialization."
+  log "The 'PG_VERSION' file was not found in '$data_dir'. Skipping to database initialization."
   exit 0
 fi
 
 if [ "$current_version" == "$target_version" ]; then
-  echo "Already at target version, exiting"
+  log "Already at target version, exiting."
   exit 0
 elif [ "$current_version" -lt "$target_version" ]; then
   if [ "$current_version" -lt 10 ]; then
@@ -42,41 +55,41 @@ elif [ "$current_version" -lt "$target_version" ]; then
   fi
   if [ "$target_version" -lt 10 ]; then
     target_version=9.6
-  fi  
+  fi
 else
-  echo "ERROR: Downgrading is not supported at the moment."
+  log "Downgrading is not supported at the moment."
   exit 1
-fi   
+fi
 
 # Check if the target version is in the list of allowed versions
 if [[ ! " ${supported_versions_array[@]} " =~ " ${target_version} " ]]; then
-  echo "ERROR: Target PostgreSQL version '$target_version' is not supported at the moment.\nSupported versions are: ${supported_versions[*]}."
+  log "Target PostgreSQL version '$target_version' is not supported at the moment. Supported versions are: ${supported_versions[*]}."
   exit 1
 fi
 
 if [ ! -d "$backup_dir" ]; then
   mkdir -p "$backup_dir"
-fi  
+fi
 
 # Backup the data dir
-echo "Creating a backup of the data directory."
-rsync -a --delete "$data_dir/" "$backup_dir/postgresql-$current_version/" 
+log "Creating a backup of the data directory."
+rsync -a --delete "$data_dir/" "$backup_dir/postgresql-$current_version/"
 
 exit_status=$?
 if [ $exit_status -ne 0 ]; then
-  echo "ERROR: rsync failed with exit code $exit_status. Make sure destination directory has sufficient space."
+  log "rsync failed with exit code $exit_status. Make sure destination directory has sufficient space."
   exit 1
 fi
 
 
 # prepare for upgrade
-echo "Preparing upgrade from current PostgreSQL version $current_version to the desired version $target_version."
+log "Preparing upgrade from PostgreSQL $current_version to $target_version"
 
 # set necessary permissions on data dir for user postgres
 chmod 0700 $data_dir
 
 # Start the old PostgreSQL server
-echo "Starting the old PostgreSQL server."
+log "Starting the old PostgreSQL server."
 $binaries_dir/$current_version/bin/pg_ctl start -w -D "$data_dir"
 
 # Gather locale and encoding settings
@@ -84,27 +97,27 @@ psql=$binaries_dir/$current_version/bin/psql
 lc_collate=$($psql -c "SELECT datcollate FROM pg_database WHERE datname = current_database();" | awk 'NR==3' | xargs)
 lc_ctype=$($psql -c "SELECT datctype FROM pg_database WHERE datname = current_database();" | awk 'NR==3' | xargs)
 encoding=$($psql -c "SHOW server_encoding;" | awk 'NR==3' | xargs)
-echo "Locale and encoding settings: $lc_collate, $lc_ctype, $encoding."
+log "Locale and encoding settings: $lc_collate, $lc_ctype, $encoding."
 
 # Stop the old PostgreSQL server
-echo "Stopping the old PostgreSQL server."
+log "Stopping the old PostgreSQL server."
 $binaries_dir/$current_version/bin/pg_ctl stop -w -D "$data_dir"
 
 ### This is only reached if the async command works and we have a backup ###
-rm -rf $data_dir 
+rm -rf $data_dir
 
-echo "Starting PostgreSQL Upgrade Process ..."
+log "Starting PostgreSQL upgrade process"
 
 # Initialize a new database cluster
-echo "Initializing a new database cluster."
+log "Initializing a new database cluster."
 $binaries_dir/$target_version/bin/initdb --encoding=UTF8 --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8 -D "$data_dir"
 
 # Start the new PostgreSQL server
-echo "Starting the new PostgreSQL server."
+log "Starting the new PostgreSQL server."
 $binaries_dir/$target_version/bin/pg_ctl start -w -D "$data_dir"
 
 # Replace the postgres database
-echo "Creating a new postgres database with Locale and encoding settings identical to old cluster db."
+log "Creating a new postgres database with locale and encoding settings identical to old cluster db."
 $binaries_dir/$target_version/bin/psql -h localhost -U postgres -d template1 -c "DROP DATABASE IF EXISTS postgres;"
 
 $binaries_dir/$target_version/bin/psql -h localhost -U postgres -d template1 -c "CREATE DATABASE postgres WITH ENCODING '$encoding' \
@@ -114,13 +127,14 @@ $binaries_dir/$target_version/bin/psql -h localhost -U postgres -d postgres -c "
 $binaries_dir/$target_version/bin/psql -h localhost -U postgres -d postgres -c "GRANT CREATE, TEMPORARY, CONNECT ON DATABASE postgres TO postgres;"
 
 # Stop the new PostgreSQL server
-echo "Stopping the new PostgreSQL server."
+log "Stopping the new PostgreSQL server."
 $binaries_dir/$target_version/bin/pg_ctl stop -D "$data_dir"
 
 # set necessary permissions on backup dir, otherwise pg_upgrade throws an error.
 chmod 0700 $backup_dir/postgresql-$current_version
 
 # Run pg_upgrade
+log "Running pg_upgrade."
 $binaries_dir/$target_version/bin/pg_upgrade \
     -b "$binaries_dir/$current_version/bin" \
     -B "$binaries_dir/$target_version/bin" \
@@ -130,11 +144,88 @@ $binaries_dir/$target_version/bin/pg_upgrade \
 
 # Check if the upgrade succeeded
 if [ $? -ne 0 ]; then
-  echo "Upgrade failed. Check logs for details."
+  log "Upgrade failed. Check logs for details."
   exit 1
 fi
 
 # perform post upgrade steps
 cp $backup_dir/postgresql-$current_version/postgresql.conf $data_dir
-echo "upgrade completed successfully."
+
+log "PostgreSQL upgrade from $current_version to $target_version finished successfully"
+
+
+post_upgrade_steps=false
+if [ "$refresh_collation" = "true" ] || [ "$vacuum_analyze" = "true" ] \
+   || [ -n "$post_upgrade_sql" ] || [ -n "$post_upgrade_sql_file" ]; then
+  post_upgrade_steps=true
+else
+  log "No post-upgrade steps enabled, skipping."
+  log "Done."
+  exit 0
+fi
+
+new_psql="$binaries_dir/$target_version/bin/psql"
+new_pg_ctl="$binaries_dir/$target_version/bin/pg_ctl"
+
+# All post-upgrade SQL output (which can be very chatty for VACUUM VERBOSE)
+# is appended to this file in the backup dir so it persists and stays out of
+# the main terminal log.
+post_upgrade_log="$backup_dir/post-upgrade-$(date +%Y%m%d-%H%M%S).log"
+log "Post-upgrade SQL output will be written to $post_upgrade_log"
+
+run_post_sql() {
+  local description="$1"
+  local sql="$2"
+  log "Executing ($description): $sql"
+  {
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S') $description ====="
+    echo "$sql"
+  } >> "$post_upgrade_log"
+  "$new_psql" -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c "$sql" \
+    >> "$post_upgrade_log" 2>&1
+}
+
+if [ "$post_upgrade_steps" = "true" ]; then
+  log "Running post-upgrade statements"
+  log "Starting the new PostgreSQL server to run post-upgrade statements."
+  "$new_pg_ctl" start -w -D "$data_dir"
+
+  if [ "$refresh_collation" = "true" ]; then
+    log "Refreshing collation version on template1 and postgres."
+    run_post_sql "refresh collation template1" "ALTER DATABASE template1 REFRESH COLLATION VERSION;"
+    run_post_sql "refresh collation postgres"  "ALTER DATABASE postgres REFRESH COLLATION VERSION;"
+  else
+    log "Skipping REFRESH COLLATION VERSION (REFRESH_COLLATION=$refresh_collation)."
+  fi
+
+  if [ "$vacuum_analyze" = "true" ]; then
+    log "Running VACUUM VERBOSE ANALYZE on the postgres database."
+    run_post_sql "vacuum analyze" "VACUUM VERBOSE ANALYZE;"
+  else
+    log "Skipping VACUUM VERBOSE ANALYZE (VACUUM_ANALYZE=$vacuum_analyze)."
+  fi
+
+  if [ -n "$post_upgrade_sql" ]; then
+    log "Executing user-provided POST_UPGRADE_SQL statements."
+    run_post_sql "POST_UPGRADE_SQL" "$post_upgrade_sql"
+  fi
+
+  if [ -n "$post_upgrade_sql_file" ]; then
+    if [ -f "$post_upgrade_sql_file" ]; then
+      log "Executing user-provided POST_UPGRADE_SQL_FILE: $post_upgrade_sql_file"
+      {
+        echo "===== $(date '+%Y-%m-%d %H:%M:%S') POST_UPGRADE_SQL_FILE: $post_upgrade_sql_file ====="
+      } >> "$post_upgrade_log"
+      "$new_psql" -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -f "$post_upgrade_sql_file" \
+        >> "$post_upgrade_log" 2>&1
+    else
+      log "POST_UPGRADE_SQL_FILE '$post_upgrade_sql_file' not found, skipping."
+    fi
+  fi
+
+  log "Stopping the new PostgreSQL server after post-upgrade statements."
+  "$new_pg_ctl" stop -w -D "$data_dir"
+fi
+
+log "Post-upgrade steps completed. Upgrade pipeline done."
 exit 0
