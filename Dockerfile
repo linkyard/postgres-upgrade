@@ -1,6 +1,7 @@
 ARG POSTGRES_VERSION
 FROM postgres:${POSTGRES_VERSION}
 
+# in the future: maybe fetch the versions to be downloaded from versions-postgres.yaml file.
 ARG POSTGRES_VERSIONS="9.6 12 13 14 15 16 17"
 ENV SUPPORTED_POSTGRES_VERSIONS=$POSTGRES_VERSIONS
 
