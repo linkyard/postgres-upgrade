@@ -31,12 +31,6 @@ if [ -d "$backup_dir/postgresql" ]; then
   done < <(find "$backup_dir" -type d -mtime +7 -name 'postgresql')
 fi
 
-# Verify that the target version is set
-if [ -z "$target_version" ]; then
-  log "Target PostgreSQL version is not set. Please set the PSQL_VERSION environment variable."
-  exit 1
-fi
-
 # Check if PG_VERSION file exists otherwise exit.
 if [ -f "$data_dir/PG_VERSION" ]; then
   current_version=$(cat "$data_dir/PG_VERSION" | cut -d '.' -f 1)
@@ -86,7 +80,7 @@ fi
 log "Preparing upgrade from PostgreSQL $current_version to $target_version"
 
 # set necessary permissions on data dir for user postgres
-chmod 0700 $data_dir
+chmod 0700 "$data_dir"
 
 # Start the old PostgreSQL server
 log "Starting the old PostgreSQL server."
@@ -103,8 +97,8 @@ log "Locale and encoding settings: $lc_collate, $lc_ctype, $encoding."
 log "Stopping the old PostgreSQL server."
 $binaries_dir/$current_version/bin/pg_ctl stop -w -D "$data_dir"
 
-### This is only reached if the async command works and we have a backup ###
-rm -rf $data_dir
+### This is only reached if the rsync command works and we have a backup ###
+rm -rf "$data_dir"
 
 log "Starting PostgreSQL upgrade process"
 
@@ -131,7 +125,7 @@ log "Stopping the new PostgreSQL server."
 $binaries_dir/$target_version/bin/pg_ctl stop -D "$data_dir"
 
 # set necessary permissions on backup dir, otherwise pg_upgrade throws an error.
-chmod 0700 $backup_dir/postgresql-$current_version
+chmod 0700 "$backup_dir/postgresql-$current_version"
 
 # Run pg_upgrade
 log "Running pg_upgrade."
@@ -149,7 +143,8 @@ if [ $? -ne 0 ]; then
 fi
 
 # perform post upgrade steps
-cp $backup_dir/postgresql-$current_version/postgresql.conf $data_dir
+cp "$backup_dir/postgresql-$current_version/postgresql.conf" "$data_dir"
+
 
 log "PostgreSQL upgrade from $current_version to $target_version finished successfully"
 
@@ -167,12 +162,10 @@ fi
 new_psql="$binaries_dir/$target_version/bin/psql"
 new_pg_ctl="$binaries_dir/$target_version/bin/pg_ctl"
 
-# All post-upgrade SQL output (which can be very chatty for VACUUM VERBOSE)
-# is appended to this file in the backup dir so it persists and stays out of
-# the main terminal log.
+# log post-upgrade SQL output to a file
 post_upgrade_log="$backup_dir/post-upgrade-$(date +%Y%m%d-%H%M%S).log"
 log "Post-upgrade SQL output will be written to $post_upgrade_log"
-
+ 
 run_post_sql() {
   local description="$1"
   local sql="$2"
@@ -184,12 +177,12 @@ run_post_sql() {
   "$new_psql" -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c "$sql" \
     >> "$post_upgrade_log" 2>&1
 }
-
+ 
 if [ "$post_upgrade_steps" = "true" ]; then
   log "Running post-upgrade statements"
   log "Starting the new PostgreSQL server to run post-upgrade statements."
   "$new_pg_ctl" start -w -D "$data_dir"
-
+ 
   if [ "$refresh_collation" = "true" ]; then
     log "Refreshing collation version on template1 and postgres."
     run_post_sql "refresh collation template1" "ALTER DATABASE template1 REFRESH COLLATION VERSION;"
@@ -197,19 +190,19 @@ if [ "$post_upgrade_steps" = "true" ]; then
   else
     log "Skipping REFRESH COLLATION VERSION (REFRESH_COLLATION=$refresh_collation)."
   fi
-
+ 
   if [ "$vacuum_analyze" = "true" ]; then
     log "Running VACUUM VERBOSE ANALYZE on the postgres database."
     run_post_sql "vacuum analyze" "VACUUM VERBOSE ANALYZE;"
   else
     log "Skipping VACUUM VERBOSE ANALYZE (VACUUM_ANALYZE=$vacuum_analyze)."
   fi
-
+ 
   if [ -n "$post_upgrade_sql" ]; then
     log "Executing user-provided POST_UPGRADE_SQL statements."
     run_post_sql "POST_UPGRADE_SQL" "$post_upgrade_sql"
   fi
-
+ 
   if [ -n "$post_upgrade_sql_file" ]; then
     if [ -f "$post_upgrade_sql_file" ]; then
       log "Executing user-provided POST_UPGRADE_SQL_FILE: $post_upgrade_sql_file"
@@ -222,10 +215,10 @@ if [ "$post_upgrade_steps" = "true" ]; then
       log "POST_UPGRADE_SQL_FILE '$post_upgrade_sql_file' not found, skipping."
     fi
   fi
-
+ 
   log "Stopping the new PostgreSQL server after post-upgrade statements."
   "$new_pg_ctl" stop -w -D "$data_dir"
 fi
-
+ 
 log "Post-upgrade steps completed. Upgrade pipeline done."
 exit 0
